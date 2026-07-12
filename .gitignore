@@ -1,0 +1,31 @@
+# --- large / generated / private runtime dirs (never committed) ---
+models/
+venvs/
+vendor/
+work/
+out/
+logs/
+speakers/
+jobs/done/
+jobs/failed/
+ledger/
+FERRYMAN_DATA/
+
+# --- python bytecode / caches ---
+__pycache__/
+*.pyc
+
+# --- compaction / continuity artifacts ---
+.recall/
+
+# --- generated manifest ---
+download_manifest.html
+
+# --- media (voice samples, portraits, rendered videos, idle footage) ---
+*.mp3
+*.mp4
+*.wav
+*.jpg
+*.jpeg
+*.png
+*.mov

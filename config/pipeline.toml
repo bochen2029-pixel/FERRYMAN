@@ -1,0 +1,84 @@
+# FERRYMAN config (SPEC §13) — [box] is PER-MACHINE; edit to match your hardware.
+
+[box]
+name = "local-box"
+gpu = "your-gpu"                  # e.g. an sm_89 Ada card with 16 GB VRAM
+vram_gb = 16
+torch_cuda = "cu128"              # orchestrator-preferred; per-venv pins may differ (musetalk=cu118 torch2.0.1)
+autocast = "fp16"
+
+[defaults]
+tier = "T1"
+lang = "zh"
+fps = 25
+voice_engine = "indextts2"        # C2: default voice (non-commercial license — see config/licenses.md)
+face_model = "musetalk"
+idle = "auto"                     # prefer speakers/<id>/idle_hi.mp4, else idle_src.mp4
+captions = true
+label = true                      # C6: GB 45438-2025 explicit+implicit labels, default ON
+
+[output]
+vcodec = "h264_nvenc"
+acodec = "aac"
+audio_sr = 48000
+pix_fmt = "yuv420p"
+
+[audio]                            # B4 mastering chain (inside concat_audio)
+loudnorm_lufs = -16
+pause_ms_sentence = 300
+trim_silence_db = -45
+
+[oracles]
+av_len_delta_ms_max = 100
+require_codec_conformance = true
+# Calibrate these on your own recordings + known-text synth. Reference ranges seen in
+# testing: real-vs-real speaker-sim ceiling ~0.89-0.97 (intra-session); synth-vs-ref
+# ~0.86-0.91; synth CER typically near 0.0 (FireRedASR2-AED + normalization).
+audio_cer_max = 0.05              # headroom above typical worst-observed CER
+speaker_sim_min = 0.75            # margin below the synth-vs-ref floor; catches timbre drift
+speaker_sim_enforce = true        # enable once you have calibrated the floor (B2)
+cer_error_floor_chars = 1         # absolute tolerance: 1 char of ASR homophone ambiguity never fails a segment
+
+[vram]
+min_free_gb_before_load = 1.5
+exclusive_gpu_lock = false        # single-user box: no co-resident assistant; flip on shared boxes (§9)
+
+[models.indextts2]
+repo = "IndexTeam/IndexTTS-2"
+local = '<FERRYMAN_HOME>\models\indextts2'
+venv = "venv-tts"
+est_vram_gb = 8.2                 # ~8.1 GB peak observed
+license = "NC (Bilibili) — non-commercial; see config/licenses.md caution"
+
+[models.cosyvoice3]
+repo = "FunAudioLLM/Fun-CosyVoice3-0.5B-2512"
+local = '<FERRYMAN_HOME>\models\cosyvoice3'
+venv = "venv-cosyvoice"
+status = "DEFERRED (Q4: flow-decoder shape bug; code/weights mismatch suspected)"
+
+[models.musetalk]
+repo = "TMElyralab/MuseTalk"
+local = '<FERRYMAN_HOME>\models\musetalk'
+venv = "venv-musetalk"            # torch 2.0.1+cu118 + mm-lab chain
+est_vram_gb = 8
+
+[models.latentsync16]
+repo = "ByteDance/LatentSync-1.6"
+local = '<FERRYMAN_HOME>\models\latentsync16'
+venv = "venv-inpaint"             # fallback face model; not yet wired
+status = "weights local; wire if MuseTalk zh-mouth ever regresses"
+
+[models.liveportrait]
+repo = "KwaiVGI/LivePortrait"
+local = '<FERRYMAN_HOME>\models\liveportrait'
+venv = "venv-inpaint"             # ort-gpu 1.20.1 deviation from their 1.18 pin (cudnn9)
+role = "make-idle from stills (photo-only speakers); real footage preferred (B3)"
+
+[captions]                         # B1: text FROM SCRIPT; timing from mastered segment offsets
+source = "script"
+font = "Microsoft YaHei"
+burn = true
+
+[label]                            # C6
+explicit_mark = "AI生成"
+implicit_metadata = true
