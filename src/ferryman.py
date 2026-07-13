@@ -28,12 +28,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 ROOT = Path(os.environ.get("FERRYMAN_HOME") or Path(__file__).resolve().parent.parent)
+VENVS = Path(os.environ.get("FERRYMAN_VENVS") or (ROOT / "venvs"))
 SPEAKERS = ROOT / "speakers"
 JOBS = ROOT / "jobs"
 WORK = ROOT / "work"
 OUT = ROOT / "out"
 LEDGER = ROOT / "ledger" / "runs.jsonl"
-VENVS = Path(os.environ.get("FERRYMAN_VENVS") or (ROOT / "venvs"))
 VENV_TTS = VENVS / "venv-tts" / "Scripts" / "python.exe"
 VENV_ORACLE = VENVS / "venv-oracle" / "Scripts" / "python.exe"
 VENV_MUSETALK = VENVS / "venv-musetalk" / "Scripts" / "python.exe"
@@ -41,6 +41,12 @@ VENV_INPAINT = VENVS / "venv-inpaint" / "Scripts" / "python.exe"
 MUSETALK_REPO = ROOT / "vendor" / "MuseTalk"
 LIVEPORTRAIT_REPO = ROOT / "vendor" / "LivePortrait"
 MODELS = ROOT / "models"
+# Head D — dubbing
+VENV_SEEDVC = VENVS / "venv-seedvc" / "Scripts" / "python.exe"
+SEEDVC_REPO = ROOT / "vendor" / "seed-vc"
+NLLB_DIR = MODELS / "nllb200"
+EARSHOT = Path(os.environ.get("EARSHOT_PY") or "earshot.py")
+AUDIO_EXTS = {".wav", ".mp3", ".m4a", ".flac", ".ogg", ".aac", ".mp4", ".mov", ".mkv", ".webm"}
 TTS_CACHE = WORK / "_cache" / "tts"
 CJK_FONT_NAME = "Microsoft YaHei"
 CJK_FONT_FILE = r"C:/Windows/Fonts/msyh.ttc"
@@ -114,7 +120,7 @@ def vram_guard(min_free_gb: float = 1.5) -> None:
 class Job:
     job_id: str
     speaker: str
-    script: str
+    script: str = ""               # video: the text to speak; dub jobs have none
     lang: str = "zh"
     tier: str = "T1"
     voice_engine: str = "indextts2"
@@ -124,6 +130,10 @@ class Job:
     label: bool = True              # C6 — AIGC mark; False only for private outputs
     pinyin_overrides: dict = field(default_factory=dict)   # C3 (consumed when cosyvoice3 lands)
     seed: int = 1234
+    graphics: dict = field(default_factory=dict)           # P7 Head G — OFF unless {"enabled":true,"cues":[...]}
+    target: str = "video"          # video (default; render()) | dub (Head D). audio|infographic|motion = future heads
+    dub: dict = field(default_factory=dict)                # Head D: {"mode":"same-lang"|"cross-lingual","source",
+    #                                                        "source_lang","target_lang","diffusion_steps","sim_min","cer_max"}
     output: dict = field(default_factory=lambda: {
         "codec": "h264_nvenc", "fps": 25, "res": "source", "audio": "aac_48k"})
 
@@ -374,6 +384,66 @@ def lipsync_inpaint(job: Job, master: Path, workdir: Path) -> Path:
     return vids[-1]
 
 
+# ------------------------------------------------ 3b · graphics compositor (P7 Head G — TOGGLEABLE)
+def compose_graphics(job: "Job", video: Path, spans: list, workdir: Path) -> tuple[Path, list]:
+    """OPTIONAL graphics layer. **No-op unless `job.graphics.enabled` is true** — existing
+    renders are byte-for-byte unchanged. When on, composites pre-rendered graphic *cues*
+    onto the lipsynced video BEFORE captions/label burn (this stage MUST live here: it binds
+    to the mastering stage's live segment `spans`, which a finished/purged video can't supply).
+
+    Each cue (in job.graphics.cues):
+      mode        "pip" (alpha .mov overlaid, host stays) | "fullscreen" (opaque .mp4 cutaway)
+      file        pre-rendered graphic (tier-1 Director = author renders the HyperFrames HTML
+                  to a file at the job's fps/res, then references it here); relative to FERRYMAN_HOME
+      span        one of:  {"seg": i}  |  {"seg_start": i, "seg_end": j}  |  {"start": s, "end": e}
+      pos         overlay x:y (default "0:0"; our comps are full-canvas so the card is placed in-HTML)
+    Returns (video_out, provenance[]) — provenance is [] when off, and is hashed into the ledger.
+    New oracles here: composite must not change duration or resolution; every cue file must exist."""
+    g = getattr(job, "graphics", None) or {}
+    if not g.get("enabled") or not g.get("cues"):
+        return video, []
+
+    def span_of(cue: dict) -> tuple[float, float]:
+        if "start" in cue and "end" in cue:
+            return float(cue["start"]), float(cue["end"])
+        if "seg" in cue:
+            a, b = spans[int(cue["seg"])]
+            return float(a), float(b)
+        return float(spans[int(cue["seg_start"])][0]), float(spans[int(cue["seg_end"])][1])
+
+    inputs, parts, last, idx, prov = ["-i", str(video)], [], "[0:v]", 1, []
+    for cue in g["cues"]:
+        a, b = span_of(cue)
+        gf = cue.get("file")
+        if not gf:
+            raise RuntimeError(f"graphics oracle: cue missing 'file' (pre-render the project): {cue}")
+        gpath = Path(gf) if Path(gf).is_absolute() else (ROOT / gf)
+        if not gpath.exists():
+            raise RuntimeError(f"graphics oracle: cue file not found: {gpath}")
+        pos = cue.get("pos", "0:0")
+        inputs += ["-i", str(gpath)]
+        # shift each graphic so its frame 0 lands at the span start, then gate it to [a,b]
+        parts.append(f"[{idx}:v]setpts=PTS-STARTPTS+{a:.3f}/TB[g{idx}]")
+        parts.append(f"{last}[g{idx}]overlay={pos}:enable='between(t,{a:.3f},{b:.3f})':eof_action=pass[v{idx}]")
+        last = f"[v{idx}]"
+        prov.append({"mode": cue.get("mode"), "file": gf,
+                     "span": [round(a, 3), round(b, 3)], "sha256": sha256(gpath)})
+        idx += 1
+
+    out = workdir / "composited.mp4"
+    dur0, w0, h0 = probe_duration(video), probe_stream(video, "video", "width"), probe_stream(video, "video", "height")
+    must(run(["ffmpeg", "-v", "error", "-y", *inputs, "-filter_complex", ";".join(parts),
+              "-map", last, "-map", "0:a",
+              "-c:v", job.output.get("codec", "h264_nvenc"), "-cq", "23", "-pix_fmt", "yuv420p",
+              "-c:a", "copy", str(out)]), "graphics composite")
+    if abs(probe_duration(out) - dur0) > 0.15:
+        raise RuntimeError(f"graphics oracle: composite duration {probe_duration(out):.2f}s != base {dur0:.2f}s")
+    if (probe_stream(out, "video", "width"), probe_stream(out, "video", "height")) != (w0, h0):
+        raise RuntimeError("graphics oracle: composite changed resolution")
+    log(f"graphics: composited {len(prov)} cue(s) {[p['mode'] for p in prov]} (before captions/label)")
+    return out, prov
+
+
 # ------------------------------------------------ 5 · captions from script (B1) — sentence ASS
 def build_ass(segs: list[str], spans: list[tuple[float, float]], out: Path,
               play_w: int, play_h: int, captions: bool = True, label: bool = False,
@@ -478,6 +548,7 @@ def render(job_path: Path) -> Path:
     t = time.time(); omet = oracle_segments(job, segs, seg_wavs, workdir); timings["oracle"] = round(time.time() - t, 1)
     t = time.time(); master, spans = concat_audio(seg_wavs, workdir); timings["audio"] = round(time.time() - t, 1)
     t = time.time(); lipsynced = lipsync_inpaint(job, master, workdir); timings["face"] = round(time.time() - t, 1)
+    t = time.time(); lipsynced, gprov = compose_graphics(job, lipsynced, spans, workdir); timings["graphics"] = round(time.time() - t, 1)
 
     ass = None
     if job.captions or job.label:
@@ -501,7 +572,8 @@ def render(job_path: Path) -> Path:
                    "voice_ref_sha256": sha256(spk / "ref.wav"),
                    "idle_base": job.idle_base().name},
         "models": {"tts": "IndexTeam/IndexTTS-2@local", "face": "TMElyralab/MuseTalk@v15-local"},
-        "params": {"seed": job.seed, "label": job.label, "captions": job.captions},
+        "params": {"seed": job.seed, "label": job.label, "captions": job.captions,
+                   "graphics": gprov or None},
         "outputs": {"final_sha256": sha256(final), "duration_s": oracles["duration_s"]},
         "oracles": oracles, "timings_s": {**timings, "total": round(time.time() - t0, 1)},
     }
@@ -514,6 +586,156 @@ def render(job_path: Path) -> Path:
     if not oracles["pass"]:
         raise RuntimeError(status)
     return final
+
+
+# ---------------------------------------------------------------------- Head D · dubbing (§ target:"dub")
+def _asr(audio: Path, lang: str | None = None) -> str:
+    """ASR front-end via the earshot organ (whisper.cpp, multilingual). Transcript on stdout."""
+    cmd = ["python", EARSHOT, "--model", "turbo"] + (["--lang", lang] if lang else []) + [audio]
+    cp = must(run(cmd), "asr (earshot)")
+    lines = [ln for ln in cp.stdout.splitlines() if ln.strip() and not ln.startswith("[earshot]")]
+    return " ".join(lines).strip()
+
+
+def _translate(segs: list[str], src_lang: str, tgt_lang: str, workdir: Path) -> list[str]:
+    task = workdir / "mt_task.json"
+    task.write_text(json.dumps({"model": str(NLLB_DIR), "src_lang": src_lang, "tgt_lang": tgt_lang,
+                                "items": [{"idx": i, "text": t} for i, t in enumerate(segs)]},
+                               ensure_ascii=False), encoding="utf-8")
+    must(run([VENV_TTS, ROOT / "src" / "stage_translate_nllb.py", task]), "translate (nllb)")  # venv-tts: torch>=2.6
+    res = json.loads(Path(str(task) + ".result").read_text(encoding="utf-8"))
+    return [x["text"] for x in sorted(res["items"], key=lambda x: x["idx"])]
+
+
+def _seedvc(source: Path, ref: Path, steps: int, workdir: Path) -> Path:
+    outdir = workdir / "seedvc"
+    outdir.mkdir(parents=True, exist_ok=True)
+    vram_guard()
+    must(run([VENV_SEEDVC, "inference.py", "--source", source, "--target", ref,
+              "--output", outdir, "--diffusion-steps", str(steps), "--fp16", "True"],
+             cwd=SEEDVC_REPO, extra_env={"HF_HUB_DISABLE_XET": "1"}), "seed-vc convert")
+    outs = sorted(outdir.glob("*.wav"), key=lambda p: p.stat().st_mtime)
+    if not outs:
+        raise RuntimeError("dub oracle: seed-vc produced no wav")
+    return outs[-1]
+
+
+def _speaker_sim(wav: Path, ref: Path, text: str, workdir: Path) -> float | None:
+    """WeSpeaker cosine (language-agnostic) via stage_oracle — the dub-defining falsifier. The
+    FireRedASR2 CER it also computes is only meaningful for zh, so dub uses earshot for
+    intelligibility. Tolerant: returns None (not fatal) if the oracle can't run on this audio."""
+    if not VENV_ORACLE.exists():
+        return None
+    task = workdir / "dub_sim.json"
+    task.write_text(json.dumps({"ref_wav": str(ref), "lexicon": [],
+                                "items": [{"wav": str(wav), "text": text or "。"}]},
+                               ensure_ascii=False), encoding="utf-8")
+    cp = run([VENV_ORACLE, ROOT / "src" / "stage_oracle.py", task])
+    if cp.returncode != 0:
+        log(f"dub speaker-sim: oracle unavailable on this audio — sim=None ({(cp.stderr or '')[-160:]})")
+        return None
+    items = json.loads(Path(str(task) + ".result").read_text(encoding="utf-8"))["items"]
+    return items[0].get("sim")
+
+
+def _char_cer(ref: str, hyp: str) -> float:
+    """Language-agnostic char-level error rate (normalized): back-transcription vs target text."""
+    import re
+    norm = lambda s: re.sub(r"[\s\W_]+", "", s.lower())
+    r, h = norm(ref), norm(hyp)
+    if not r:
+        return 0.0
+    prev = list(range(len(h) + 1))
+    for i, rc in enumerate(r, 1):
+        cur = [i]
+        for j, hc in enumerate(h, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (rc != hc)))
+        prev = cur
+    return round(prev[-1] / len(r), 4)
+
+
+def dub(job_path: Path) -> Path:
+    """target:"dub" — Head D. same-lang = prosody-preserving VC (seed-vc: keep source words+delivery,
+    swap timbre to the enrolled speaker). cross-lingual = ASR (audio source) -> NLLB translate ->
+    IndexTTS2 in the target language/voice ("same voice, new language"). Output = out/<id>/dub.wav."""
+    t0 = time.time()
+    job = Job.load(job_path)
+    d = job.dub or {}
+    mode = d.get("mode", "cross-lingual")
+    workdir, outdir = WORK / job.job_id, OUT / job.job_id
+    workdir.mkdir(parents=True, exist_ok=True)
+    outdir.mkdir(parents=True, exist_ok=True)
+    spk = job.spk_dir()
+    ref = spk / "ref.wav"
+    if "source" not in d:
+        raise RuntimeError("dub job needs dub.source (audio for same-lang; audio or text for cross-lingual)")
+    src = Path(d["source"]) if Path(d["source"]).is_absolute() else (ROOT / d["source"])
+    if not src.exists():
+        raise FileNotFoundError(f"dub source not found: {src}")
+    log(f"dub {job.job_id}: mode={mode} speaker={job.speaker} source={src.name}")
+
+    timings = {}
+    if mode == "same-lang":
+        steps = int(d.get("diffusion_steps", 30))
+        t = time.time(); conv = _seedvc(src, ref, steps, workdir); timings["seedvc"] = round(time.time() - t, 1)  # ref.wav ~45s; seed-vc wants 1-30s
+        t = time.time(); master, _ = concat_audio([conv], workdir); timings["master"] = round(time.time() - t, 1)
+        src_text = _asr(src, d.get("lang"))
+        hyp = _asr(master, d.get("lang"))
+        target_text, intel_cer = src_text, _char_cer(src_text, hyp)
+        models_used = {"vc": "Plachtaa/seed-vc@seed-uvit-whisper-small-wavenet"}
+    else:  # cross-lingual
+        t = time.time()
+        src_text = _asr(src, d.get("source_asr_lang")) if src.suffix.lower() in AUDIO_EXTS \
+            else src.read_text(encoding="utf-8")
+        timings["asr"] = round(time.time() - t, 1)
+        segs = segment_script(src_text)
+        t = time.time(); tgt_segs = _translate(segs, d["source_lang"], d["target_lang"], workdir); timings["translate"] = round(time.time() - t, 1)
+        t = time.time(); wavs = tts_segments(job, tgt_segs, workdir); timings["tts"] = round(time.time() - t, 1)
+        t = time.time(); master, _ = concat_audio(wavs, workdir); timings["master"] = round(time.time() - t, 1)
+        target_text = " ".join(tgt_segs)
+        hyp = _asr(master, None)
+        intel_cer = _char_cer(target_text, hyp)
+        models_used = {"mt": "facebook/nllb-200-distilled-600M", "tts": "IndexTeam/IndexTTS-2@local"}
+
+    t = time.time()
+    sim = _speaker_sim(master, ref, target_text if mode != "same-lang" else "", workdir)
+    timings["oracle"] = round(time.time() - t, 1)
+    sim_min = float(ORACLE_CFG.get("speaker_sim_min", 0.75))
+    sim_floor = float(d.get("sim_min", round(max(0.60, sim_min - 0.15), 3)))  # dub relaxes: x-lingual/VC lowers sim
+    cer_max = float(d.get("cer_max", 0.20))
+
+    dubout = outdir / "dub.wav"
+    if job.label:  # C6/GB45438 (audio) — implicit metadata tag; audible notice = TODO
+        must(run(["ffmpeg", "-v", "error", "-i", master, "-metadata",
+                  f"comment=FERRYMAN AIGC dub mode={mode} content_id={job.job_id}", "-y", dubout]), "dub label")
+    else:
+        shutil.copy(master, dubout)
+
+    ok = ((sim is None) or sim >= sim_floor) and intel_cer < cer_max
+    record = {
+        "job_id": job.job_id, "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "target": "dub", "mode": mode, "speaker": job.speaker,
+        "inputs": {"source": str(src), "source_sha256": sha256(src), "voice_ref_sha256": sha256(ref)},
+        "dub": {k: d.get(k) for k in ("mode", "source_lang", "target_lang", "diffusion_steps")},
+        "models": models_used, "params": {"label": job.label},
+        "outputs": {"dub_sha256": sha256(dubout), "duration_s": round(probe_duration(dubout), 2)},
+        "oracles": {"speaker_sim": sim, "sim_floor": sim_floor, "intel_cer": intel_cer,
+                    "cer_max": cer_max, "pass": bool(ok)},
+        "timings_s": {**timings, "total": round(time.time() - t0, 1)},
+    }
+    h = ledger_append(record)
+    (outdir / "manifest.jsonl").write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+    status = "DUB OK" if ok else f"DUB ORACLE FAIL (sim={sim} floor={sim_floor} | intel_cer={intel_cer} max={cer_max})"
+    log(f"FINALIZE dub {job.job_id}: {dubout} | {record['outputs']['duration_s']}s | sim {sim} | "
+        f"intel_cer {intel_cer} | ledger {h[:12]} | {status}")
+    if not ok:
+        raise RuntimeError(status)
+    return dubout
+
+
+def run_job(job_path: Path) -> Path:
+    """Dispatch by target: dub -> Head D, else the video render()."""
+    return dub(job_path) if Job.load(job_path).target == "dub" else render(job_path)
 
 
 # ---------------------------------------------------------------------- enroll verbs (§7.0)
@@ -632,7 +854,7 @@ def _batch_inner() -> None:
     log(f"batch: {len(inbox)} job(s) in inbox")
     for j in inbox:
         try:
-            render(j)
+            run_job(j)   # dispatches by target: dub -> Head D, else video render()
             (JOBS / "done").mkdir(parents=True, exist_ok=True)
             shutil.move(str(j), JOBS / "done" / j.name)
         except Exception as e:  # noqa: BLE001 — batch must survive a bad job
@@ -647,12 +869,15 @@ def main() -> None:
     sub = ap.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("render"); r.add_argument("job")
     sub.add_parser("batch")
+    du = sub.add_parser("dub"); du.add_argument("job")
     ev = sub.add_parser("enroll-voice"); ev.add_argument("speaker"); ev.add_argument("audio")
     mi = sub.add_parser("make-idle"); mi.add_argument("speaker"); mi.add_argument("src")
     mi.add_argument("--driving", default=None)
     a = ap.parse_args()
     if a.cmd == "render":
-        render(Path(a.job))
+        run_job(Path(a.job))     # dispatches by target (a dub-target job still dubs)
+    elif a.cmd == "dub":
+        dub(Path(a.job))
     elif a.cmd == "batch":
         batch()
     elif a.cmd == "enroll-voice":

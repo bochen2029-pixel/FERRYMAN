@@ -1,8 +1,8 @@
-# FERRYMAN config (SPEC §13) — [box] is PER-MACHINE; edit to match your hardware.
+# FERRYMAN config (SPEC §13) — [box] is PER-MACHINE (R2: this is the dev box)
 
 [box]
-name = "local-box"
-gpu = "your-gpu"                  # e.g. an sm_89 Ada card with 16 GB VRAM
+name = "dev-box"
+gpu = "rtx-4070ti-super"          # verified nvidia-smi 2026-07-10 (sm_89 Ada, NOT the spec's Blackwell)
 vram_gb = 16
 torch_cuda = "cu128"              # orchestrator-preferred; per-venv pins may differ (musetalk=cu118 torch2.0.1)
 autocast = "fp16"
@@ -11,7 +11,7 @@ autocast = "fp16"
 tier = "T1"
 lang = "zh"
 fps = 25
-voice_engine = "indextts2"        # C2: default voice (non-commercial license — see config/licenses.md)
+voice_engine = "indextts2"        # C2: nonprofit stance; ear-gate passed 2026-07-10
 face_model = "musetalk"
 idle = "auto"                     # prefer speakers/<id>/idle_hi.mp4, else idle_src.mp4
 captions = true
@@ -31,48 +31,62 @@ trim_silence_db = -45
 [oracles]
 av_len_delta_ms_max = 100
 require_codec_conformance = true
-# Calibrate these on your own recordings + known-text synth. Reference ranges seen in
-# testing: real-vs-real speaker-sim ceiling ~0.89-0.97 (intra-session); synth-vs-ref
-# ~0.86-0.91; synth CER typically near 0.0 (FireRedASR2-AED + normalization).
-audio_cer_max = 0.05              # headroom above typical worst-observed CER
-speaker_sim_min = 0.75            # margin below the synth-vs-ref floor; catches timbre drift
-speaker_sim_enforce = true        # enable once you have calibrated the floor (B2)
+# CALIBRATED 2026-07-11 on real recordings + known-text synth (see PROGRESS):
+#   real-vs-real sim ceiling 0.89-0.97 (intra-session) · synth-vs-ref observed 0.863-0.909
+#   synth CER observed 0.0 / 0.0 / 0.0 / 0.0316 (FireRedASR2-AED + normalization)
+audio_cer_max = 0.05              # headroom above worst observed 0.0316
+speaker_sim_min = 0.75            # margin below synth floor 0.863; catches timbre drift
+speaker_sim_enforce = true        # enabled post-calibration (B2)
 cer_error_floor_chars = 1         # absolute tolerance: 1 char of ASR homophone ambiguity never fails a segment
 
 [vram]
 min_free_gb_before_load = 1.5
-exclusive_gpu_lock = false        # single-user box: no co-resident assistant; flip on shared boxes (§9)
+exclusive_gpu_lock = false        # dev box: no co-resident assistant; flip on shared boxes (§9)
 
 [models.indextts2]
 repo = "IndexTeam/IndexTTS-2"
-local = '<FERRYMAN_HOME>\models\indextts2'
+local = 'C:\FERRYMAN\models\indextts2'
 venv = "venv-tts"
-est_vram_gb = 8.2                 # ~8.1 GB peak observed
-license = "NC (Bilibili) — non-commercial; see config/licenses.md caution"
+est_vram_gb = 8.2                 # measured 8.14 peak 2026-07-10
+license = "NC (Bilibili) — OK per nonprofit stance; see config/licenses.md tripwire"
 
 [models.cosyvoice3]
 repo = "FunAudioLLM/Fun-CosyVoice3-0.5B-2512"
-local = '<FERRYMAN_HOME>\models\cosyvoice3'
+local = 'C:\FERRYMAN\models\cosyvoice3'
 venv = "venv-cosyvoice"
 status = "DEFERRED (Q4: flow-decoder shape bug; code/weights mismatch suspected)"
 
 [models.musetalk]
 repo = "TMElyralab/MuseTalk"
-local = '<FERRYMAN_HOME>\models\musetalk'
-venv = "venv-musetalk"            # torch 2.0.1+cu118 + mm-lab chain
+local = 'C:\FERRYMAN\models\musetalk'
+venv = "venv-musetalk"            # torch 2.0.1+cu118 + mm-lab chain (4 fixes, see BUILD_STATE)
 est_vram_gb = 8
 
 [models.latentsync16]
 repo = "ByteDance/LatentSync-1.6"
-local = '<FERRYMAN_HOME>\models\latentsync16'
+local = 'C:\FERRYMAN\models\latentsync16'
 venv = "venv-inpaint"             # fallback face model; not yet wired
 status = "weights local; wire if MuseTalk zh-mouth ever regresses"
 
 [models.liveportrait]
 repo = "KwaiVGI/LivePortrait"
-local = '<FERRYMAN_HOME>\models\liveportrait'
+local = 'C:\FERRYMAN\models\liveportrait'
 venv = "venv-inpaint"             # ort-gpu 1.20.1 deviation from their 1.18 pin (cudnn9)
 role = "make-idle from stills (photo-only speakers); real footage preferred (B3)"
+
+[models.nllb]                      # Head D — cross-lingual MT (naive dub)
+repo = "facebook/nllb-200-distilled-600M"
+local = 'C:\FERRYMAN\models\nllb200'
+venv = "venv-tts"                  # torch 2.8 (>=2.6): transformers 4.51 blocks .bin load under torch<2.6 (CVE-2025-32434)
+license = "CC-BY-NC-4.0 — OK per nonprofit stance"
+role = "stage_translate_nllb.py; FLORES codes (zho_Hans/eng_Latn/…); ASR→translate→TTS-in-target-voice"
+
+[models.seedvc]                    # Head D — same-language prosody-preserving voice conversion
+repo = "Plachtaa/seed-vc"          # cloned to vendor\seed-vc (gitignored); v1 seed-uvit-whisper-small-wavenet auto-downloads
+venv = "venv-seedvc"               # py3.11, torch 2.4.0+cu124 (sm_89), numpy 1.26.4
+license = "GPLv3 — OK nonprofit; quarantine if ever monetized (config/licenses.md)"
+cmd = "vendor\\seed-vc\\inference.py --source <src> --target <ref.wav> --output <dir> --diffusion-steps 30 --fp16 True"
+role = "keep source words+prosody, swap timbre to the target ref; RTF ~0.43; HF_HUB_DISABLE_XET=1 first run"
 
 [captions]                         # B1: text FROM SCRIPT; timing from mastered segment offsets
 source = "script"
