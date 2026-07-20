@@ -1,0 +1,22 @@
+{
+  "note": "FERRYMAN out-of-tree SUBSTRATE manifest (QC 2026-07-13, D-08/D-10). These live OUTSIDE FERRYMAN_HOME (default C:\\llama.cpp, C:\\models, C:\\whisper.cpp; override with FERRYMAN_LLAMA_DIR / FERRYMAN_GGUF_DIR / EARSHOT_WHISPER_DIR + EARSHOT_MODELS_DIR). They power Head A (grounding/briefing), the image-head vision oracle, and dub ASR. bin/fetch_substrate.ps1 downloads the auto-fetchable rows; 'manual' rows print instructions.",
+  "gguf": [
+    { "file": "Qwen3-8B-Q4_K_M.gguf",             "hf": "Qwen/Qwen3-8B-GGUF",             "src": "Qwen3-8B-Q4_K_M.gguf",           "role": "Head A grounding/briefing chat model" },
+    { "file": "qwen3-embedding-0.6b-q8_0.gguf",   "hf": "Qwen/Qwen3-Embedding-0.6B-GGUF", "src": "Qwen3-Embedding-0.6B-Q8_0.gguf", "role": "Head A retrieval embeddings (saved under the lowercase name the code expects)" },
+    { "file": "ggml-large-v3-turbo.bin",          "hf": "ggerganov/whisper.cpp",          "src": "ggml-large-v3-turbo.bin",        "role": "earshot ASR model (dub head; earshot --model turbo)" },
+    { "file": "Qwen3.5-9B-Q5_K_M.gguf",           "manual": true, "role": "image-head vision oracle (chat side). Custom quant from the KEEL substrate — copy from the operator's C:\\models or source an equivalent Qwen3.5-9B GGUF + matching mmproj pair." },
+    { "file": "mmproj-F16.gguf",                  "manual": true, "role": "image-head vision oracle (mmproj pair for the model above). Must MATCH the vision model — copy from the operator's C:\\models." }
+  ],
+  "binaries": [
+    { "what": "llama.cpp (llama-server.exe + llama-mtmd-cli.exe, CUDA build)", "manual": true,
+      "note": "GitHub releases: https://github.com/ggml-org/llama.cpp/releases — take a recent cudart win-x64 build (dev box runs b9627). Unzip to C:\\llama.cpp or set FERRYMAN_LLAMA_DIR." },
+    { "what": "whisper.cpp (whisper-cli.exe + ggml DLLs)", "manual": true,
+      "note": "GitHub releases: https://github.com/ggerganov/whisper.cpp/releases — win-x64 build (CPU build is fine; earshot is batch, not live). Unzip to C:\\whisper.cpp or set EARSHOT_WHISPER_DIR." },
+    { "what": "ComfyUI (image head only)", "manual": true,
+      "note": "Install ComfyUI Desktop (https://www.comfy.org/) — imagehead\\start_comfyui.cmd drives its bundled backend headless on :8188 via %USERPROFILE%/%LOCALAPPDATA% (override COMFYUI_* envs). SDXL checkpoint sd_xl_base_1.0.safetensors goes in its models\\checkpoints." },
+    { "what": "Node.js >= 22 (graphics head only)", "manual": true,
+      "note": "winget install OpenJS.NodeJS.LTS — HyperFrames renders via npx hyperframes@0.6.73 (first run fetches the package + headless Chromium: NETWORK REQUIRED once)." },
+    { "what": "ffmpeg + ffprobe on PATH (nvenc build)", "manual": true,
+      "note": "Required for EVERYTHING. gyan.dev or BtbN builds include h264_nvenc. doctor checks this." }
+  ]
+}

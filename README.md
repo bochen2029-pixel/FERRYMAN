@@ -60,14 +60,25 @@ bin\ferryman.cmd batch
 
 A job is seven lines of JSON — see [jobs/inbox/example.job.json](jobs/inbox/example.job.json).
 
+More verbs: `doctor` (self-diagnosis: READY/DEGRADED/BLOCKED with actionable messages) ·
+`verify-ledger` (re-derives the whole hash chain) · `dub` (voice-convert / cross-lingual dub) ·
+`upgrade-idle` (swap in higher-res base footage; stale renders self-invalidate) ·
+`preflight-cloud` (the fail-closed checklist for the optional cloud tier).
+
 ## What makes it trustworthy at scale
 
 Every episode is graded by assertions **no generative model authored**, before it counts as done:
 per-segment **character-error-rate** (does the voice say every word?), **speaker similarity**
-(does it sound like the enrolled person?), **A/V length delta** and **codec conformance**. A job
-that fails its oracles goes to `jobs/failed/` with a reason — it never pretends to have worked.
-Every render appends a **blake2b hash-chained record** to the ledger with input hashes, model
-revisions, seeds, and output hashes, so a published episode is reproducible from its manifest.
+(does it sound like the enrolled person?), **lip-sync confidence** (a SyncNet score on every
+render — report-only until you calibrate a floor on your own footage), **A/V length delta** and
+**codec conformance**. Oracles are **fail-closed**: if a verification engine can't run, the render
+refuses rather than shipping unverified output (`FERRYMAN_ALLOW_UNVERIFIED=1` is the one explicit,
+loudly-logged override — and it can never report green). A job that fails its oracles goes to
+`jobs/failed/` with a reason — it never pretends to have worked. Every render appends a **blake2b
+hash-chained record** to the ledger (audit it any time with `verify-ledger`) and writes an
+`out/<job>/meta.json` sidecar — a stable machine-readable report card for GUIs and site pipelines.
+Resumes are **identity-bound**: an edited script or swapped base can never silently reuse a stale
+mouth track.
 
 ## Models & licensing
 
@@ -77,9 +88,22 @@ stack and are responsible for complying with each model's license for your use c
 per-model record lives in [config/licenses.md](config/licenses.md). FERRYMAN's own code is
 Apache-2.0 (see [LICENSE](LICENSE)).
 
+## Local-first, cloud by explicit toggle
+
+The render path is fully offline by default. An **optional cloud-burst tier** (for higher-quality
+face models that need more VRAM than a desktop GPU) exists behind a **fail-closed preflight
+ladder**: a config toggle, a project-charter sign-off flag, the **enrolled speaker's own recorded
+consent**, hard budget caps, and an API key that lives only in an env var. Until every gate is
+green, cloud jobs refuse with the exact checklist (`ferryman preflight-cloud <speaker>`); a
+`[governance] revenue` flag likewise trips a **license tripwire in code** if you flip to
+commercial use on a non-commercial voice model. See [config/cloud.toml](config/cloud.toml).
+
 ## Status & caveats
 
 - Windows-first. Stages run in isolated per-model venvs; a Linux/WSL2 path is feasible per stage.
+- `manifests/` now ships machine-readable rebuild recipes: model-weight manifests, vendor-clone
+  pins, and **per-venv lockfiles with their pip index lines baked in** — a clean rebuild from
+  these locks has been verified to reproduce the shipped oracle verdicts exactly.
 - The default **inpainting** tier (mouth-on-idle-base) renders unlimited length at flat VRAM with
   zero identity drift — it is the production workhorse. A diffusion "hero" tier for short
   full-motion inserts is optional and drift-limited; see ARCHITECTURE.

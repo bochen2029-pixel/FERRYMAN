@@ -1,0 +1,34 @@
+{
+  "note": "FERRYMAN model-weight manifest (QC 2026-07-13 v2). The SEED zip ships THIS FILE, not the weights. bin/hydrate_weights.ps1 downloads each repo at runtime (HF API tree listing + curl, HF_HUB_DISABLE_XET=1) into <FERRYMAN_HOME>/models/<dest>, verifies sizes (and sha256 for LFS files with -Verify), then applies the `layout` junctions. ~53 GB total; nothing large travels in the zip. All repo ids verified against the HF API 2026-07-13.",
+  "repos": [
+    { "id": "IndexTeam/IndexTTS-2",                 "dest": "indextts2",                "role": "TTS — voice clone (the render voice)" },
+    { "id": "FireRedTeam/FireRedASR2-AED",          "dest": "fireredasr2-aed",          "role": "oracle — per-segment CER" },
+    { "id": "Wespeaker/wespeaker-cnceleb-resnet34", "dest": "wespeaker-cnceleb-resnet34", "role": "oracle — speaker-sim (cnceleb_resnet34.onnx); REQUIRED, sim gate is enforced (QC D-08)" },
+    { "id": "TMElyralab/MuseTalk",                  "dest": "musetalk",                 "role": "lipsync (Head V body); layout junctions below wire it into vendor/MuseTalk/models" },
+    { "id": "stabilityai/sd-vae-ft-mse",            "dest": "sd-vae-ft-mse",            "role": "MuseTalk VAE dependency" },
+    { "id": "yzd-v/DWPose",                         "dest": "dwpose", "filter": "(dw-ll_ucoco_384\\.(pth|onnx)|\\.md)$", "role": "MuseTalk pose dependency (QC D-01: was unmanifested)" },
+    { "id": "ManyOtherFunctions/face-parse-bisent", "dest": "face-parse-bisent",        "role": "MuseTalk face-parse dependency (QC D-01: was unmanifested)" },
+    { "id": "openai/whisper-tiny",                  "dest": "whisper-tiny", "filter": "(\\.safetensors|\\.bin|\\.json|\\.txt)$", "role": "MuseTalk audio encoder (QC D-01: was unmanifested; flax/tf variants filtered out)" },
+    { "id": "KwaiVGI/LivePortrait",                 "dest": "liveportrait",             "role": "make-idle from stills (photo-only speakers)" },
+    { "id": "facebook/nllb-200-distilled-600M",     "dest": "nllb200",                  "role": "Head D — cross-lingual dub MT" },
+    { "id": "Systran/faster-whisper-large-v3",      "dest": "faster-whisper-large-v3",  "role": "caption timing / alignment" },
+    { "id": "ByteDance/LatentSync-1.6",             "dest": "latentsync16", "optional": true, "role": "fallback face model (not wired)" },
+    { "id": "stabilityai/sd-turbo",                 "dest": "sd-turbo", "filter": "(fp16\\.safetensors|\\.json|\\.txt)$", "optional": true, "role": "diffusion smoke (P0 gate)" },
+    { "id": "FunAudioLLM/Fun-CosyVoice3-0.5B-2512", "dest": "cosyvoice3", "optional": true, "role": "alt/fallback TTS (deferred, Q4)" }
+  ],
+  "layout": {
+    "note": "QC D-01: MuseTalk resolves weights RELATIVE TO ITS VENDOR REPO (vendor/MuseTalk/models/...). These junctions (create with New-Item -ItemType Junction; no admin needed) wire the hydrated models/ tree into that layout. hydrate_weights.ps1 applies them automatically after download.",
+    "junctions": [
+      { "link": "vendor/MuseTalk/models/musetalk",          "target": "models/musetalk/musetalk" },
+      { "link": "vendor/MuseTalk/models/musetalkV15",       "target": "models/musetalk/musetalkV15" },
+      { "link": "vendor/MuseTalk/models/sd-vae",            "target": "models/sd-vae-ft-mse" },
+      { "link": "vendor/MuseTalk/models/whisper",           "target": "models/whisper-tiny" },
+      { "link": "vendor/MuseTalk/models/dwpose",            "target": "models/dwpose" },
+      { "link": "vendor/MuseTalk/models/face-parse-bisent", "target": "models/face-parse-bisent" }
+    ]
+  },
+  "separate": [
+    { "what": "LLM/vision/ASR substrate (OUTSIDE FERRYMAN_HOME)", "note": "llama.cpp + GGUFs + whisper.cpp for Heads A/I and dub ASR — see manifests/substrate.json + bin/fetch_substrate.ps1 (QC D-08)." },
+    { "what": "vendor repos (code, cloned at pinned commits)", "dest": "vendor/", "note": "See manifests/vendor.json (machine-readable: url + commit + patch file per repo) — QC D-03. REPLICATE.md step 3 consumes it." }
+  ]
+}

@@ -1,7 +1,11 @@
-r"""Image head I5 — oracle-gated illustration (the productionized callable a job's `image`/
-`illustrate` field invokes). content -> FERRYMAN-Qwen art-direction -> ComfyUI SDXL (N candidates)
--> Qwen-vision oracle -> pick the best-passing -> provenance. Reuses I2 (image_from_doc.art_direct)
-+ the reused comfy_client + the I5 vision oracle.
+r"""Image head I5 — oracle-gated illustration. content -> FERRYMAN-Qwen art-direction ->
+ComfyUI SDXL (N candidates) -> Qwen-vision oracle -> pick the best-passing -> provenance.
+Reuses I2 (image_from_doc.art_direct) + the reused comfy_client + the I5 vision oracle.
+
+INVOCATION (QC E-09): run MANUALLY — `python imagehead\imagegen.py <doc-or-text> [out] [n]`
+or import illustrate(). A job.json `image`/`illustrate` field is NOT wired into render()
+yet (Job.load ignores unknown fields with a log line); that auto-illustrate hook is the
+planned I6+ work, not shipped behavior.
 
 VRAM discipline: Qwen(prompt) -> down; ComfyUI(generate N) -> stopped; Qwen-vision(verify) -> down.
 Never two heavy models resident at once (the one-model-at-a-time rule, across process boundaries).
@@ -11,21 +15,24 @@ Job-field pattern (the declarative hook a future render()/`ferryman illustrate` 
   then feed chosen PNG to graphics (HyperFrames <img>/bg, I3) or compose_graphics (video overlay, I4).
 """
 import json
+import os
 import subprocess
 import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import head_a_ground as H
-import comfy_client as CC
-import image_from_doc as IFD
-import vision_verify as VV
-import ferryman as F
+# QC C-01: resolve through FERRYMAN_HOME (self-derived fallback) — portable to any path.
+ROOT = Path(os.environ.get("FERRYMAN_HOME") or Path(__file__).resolve().parents[1])
+sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT / "imagehead"))
+import head_a_ground as H      # noqa: E402
+import comfy_client as CC      # noqa: E402
+import image_from_doc as IFD   # noqa: E402
+import vision_verify as VV     # noqa: E402
+import ferryman as F           # noqa: E402
 
-WF = str(Path(__file__).resolve().parent / "workflows" / "sdxl_txt2img.json")
-START_COMFY = str(Path(__file__).resolve().parent / "start_comfyui.cmd")
+WF = str(ROOT / "imagehead" / "workflows" / "sdxl_txt2img.json")
+START_COMFY = str(ROOT / "imagehead" / "start_comfyui.cmd")
 
 
 def _stop_comfy():
@@ -34,6 +41,11 @@ def _stop_comfy():
                     "ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }"],
                    capture_output=True)
     time.sleep(3)
+    # QC C-10: VERIFY the VRAM is actually free — a silent kill-failure used to hand the
+    # vision oracle a GPU still holding SDXL, and every verdict came back ok=None.
+    if CC.ComfyClient("http://127.0.0.1:8188").server_up():
+        raise SystemExit("ComfyUI is STILL listening on :8188 after stop — VRAM not freed; "
+                         "close it manually before the vision oracle runs (QC C-10)")
 
 
 def illustrate(content: str, out_dir: str, n: int = 2) -> tuple[dict, list]:
@@ -61,9 +73,18 @@ def illustrate(content: str, out_dir: str, n: int = 2) -> tuple[dict, list]:
         H._log(f"oracle {Path(c['image']).name}: ok={c['ok']} — {c['reason']}")
 
     passing = [c for c in cands if c["ok"]]
+    # QC C-14: "oracle never ran" (every ok is None — mtmd/model missing) must not be
+    # silently presented as a routine fallback pick. Fail closed unless explicitly allowed.
+    unverified = all(c.get("ok") is None for c in cands)
+    if unverified and not F.ALLOW_UNVERIFIED:
+        raise SystemExit("vision oracle unavailable for ALL candidates (llama-mtmd-cli or its "
+                         "model missing?) — refusing to pick unverified art (QC C-14; "
+                         "set FERRYMAN_ALLOW_UNVERIFIED=1 to override)")
     best = (passing or cands)[0]
     best["sha256"] = F.sha256(Path(best["image"]))
-    best["gate"] = "vision" if best.get("ok") else "fallback(no candidate passed)"
+    best["gate"] = ("vision" if best.get("ok")
+                    else ("unverified(oracle-unavailable)" if unverified
+                          else "fallback(no candidate passed)"))
     (out / "chosen.json").write_text(json.dumps({"chosen": best, "candidates": cands},
                                                 ensure_ascii=False, indent=2), encoding="utf-8")
     H._log(f"CHOSEN {best['image']} | ok={best.get('ok')} | {len(passing)}/{len(cands)} passed")
@@ -73,5 +94,5 @@ def illustrate(content: str, out_dir: str, n: int = 2) -> tuple[dict, list]:
 if __name__ == "__main__":
     arg = sys.argv[1]
     content = Path(arg).read_text(encoding="utf-8") if Path(arg).exists() else arg
-    illustrate(content, sys.argv[2] if len(sys.argv) > 2 else r"C:\FERRYMAN\work\imagehead_i5",
+    illustrate(content, sys.argv[2] if len(sys.argv) > 2 else str(ROOT / "work" / "imagehead_i5"),
                int(sys.argv[3]) if len(sys.argv) > 3 else 2)

@@ -13,30 +13,70 @@ Sequential VRAM: embed server up->embed->down, then chat server up->ground+verif
 """
 import json
 import math
-import re
 import os
+import re
 import subprocess
 import sys
 import time
 import urllib.request
 from pathlib import Path
 
-LLAMA = os.environ.get("LLAMA_SERVER", "llama-server.exe")
-EMBED_MODEL = os.environ.get("FERRYMAN_EMBED_GGUF", "qwen3-embedding-0.6b-q8_0.gguf")
-CHAT_MODEL = os.environ.get("FERRYMAN_LLM_GGUF", "Qwen3-8B-Q4_K_M.gguf")
+# QC C-01/C-02: tree paths resolve through FERRYMAN_HOME; the LLM substrate (llama.cpp +
+# GGUFs) lives OUTSIDE the tree and gets env overrides for foreign boxes. Defaults = the
+# dev box's substrate layout (manifests/substrate.json documents how to recreate it).
 ROOT = Path(os.environ.get("FERRYMAN_HOME") or Path(__file__).resolve().parent.parent)
+LLAMA_DIR = Path(os.environ.get("FERRYMAN_LLAMA_DIR") or r"C:\llama.cpp")
+GGUF_DIR = Path(os.environ.get("FERRYMAN_GGUF_DIR") or r"C:\models")
+LLAMA = str(LLAMA_DIR / "llama-server.exe")
+EMBED_MODEL = str(GGUF_DIR / "qwen3-embedding-0.6b-q8_0.gguf")
+CHAT_MODEL = str(GGUF_DIR / "Qwen3-8B-Q4_K_M.gguf")
 LOGS = ROOT / "logs"
 TOP_K = 5
+NGL = os.environ.get("FERRYMAN_NGL", "99")   # QC C-21: full GPU offload default; smaller GPUs override
+CTX = int(os.environ.get("FERRYMAN_LLAMA_CTX", "8192"))   # REM-4.12 (R-12): overridable server ctx
 
 
 def _log(m): print(f"[head-a] {m}", flush=True)
 
 
+def stop_server(p):
+    """Terminate and WAIT until the process is really gone — an orphaned llama-server
+    holds VRAM and breaks the next one-model-at-a-time stage (QC C-09)."""
+    if p is None:
+        return
+    p.terminate()
+    try:
+        p.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        try:
+            p.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            _log("WARNING: llama-server did not die after kill() — VRAM may still be held")
+    time.sleep(1)  # driver settle before the next heavy load
+
+
 def start_server(model, port, extra, tag):
+    if not Path(LLAMA).exists():
+        raise RuntimeError(f"llama-server not found: {LLAMA} — set FERRYMAN_LLAMA_DIR "
+                           "(substrate; see manifests/substrate.json)")
+    if not Path(model).exists():
+        raise RuntimeError(f"GGUF model not found: {model} — set FERRYMAN_GGUF_DIR / fetch substrate")
+    # QC C-08: if SOMETHING already serves this port, /health would answer 200 and we'd
+    # silently query an UNKNOWN model. Refuse loudly instead of attaching.
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=1) as r:
+            if r.status == 200:
+                raise RuntimeError(f"port {port} is already serving (a sibling llama-server?) — "
+                                   f"refusing to attach to an unknown model; stop it first (QC C-08)")
+    except RuntimeError:
+        raise
+    except Exception:  # noqa: BLE001 — nothing listening: the port is ours
+        pass
     LOGS.mkdir(parents=True, exist_ok=True)
     logf = open(LOGS / f"llama_{tag}_{port}.log", "w", encoding="utf-8")
     p = subprocess.Popen([LLAMA, "-m", model, "--host", "127.0.0.1", "--port", str(port),
-                          "-ngl", "99", "-c", "8192", *extra], stdout=logf, stderr=subprocess.STDOUT)
+                          "-ngl", NGL, "-c", str(CTX), *extra], stdout=logf, stderr=subprocess.STDOUT)
     for _ in range(180):
         if p.poll() is not None:
             raise RuntimeError(f"llama-server ({tag}) exited early — see {logf.name}")
@@ -47,15 +87,26 @@ def start_server(model, port, extra, tag):
                     return p
         except Exception:  # noqa: BLE001
             time.sleep(1)
-    p.terminate()
+    stop_server(p)
     raise RuntimeError(f"llama-server ({tag}) health timeout")
 
 
-def _post(url, payload, timeout=180):
-    req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"),
-                                 headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read())
+def _post(url, payload, timeout=180, tries=3):
+    """QC C-18: a single transient hiccup (timeout on a cold cache, a slow box) used to
+    abort minutes of grounding work — retry with backoff before giving up."""
+    last = None
+    for k in range(tries):
+        try:
+            req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"),
+                                         headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return json.loads(r.read())
+        except Exception as e:  # noqa: BLE001 — URLError / socket.timeout / HTTPError
+            last = e
+            if k < tries - 1:
+                _log(f"llama HTTP retry {k+1}/{tries-1} after: {e}")
+                time.sleep(2 * (k + 1))
+    raise RuntimeError(f"llama HTTP failed after {tries} tries: {last} (QC C-18)")
 
 
 def embed(port, text):
@@ -100,6 +151,9 @@ def ground(doc_path, question, out_path=None):
     t0 = time.time()
     doc = Path(doc_path).read_text(encoding="utf-8")
     spans = split_spans(doc)
+    if not spans:
+        # QC C-06: fail HERE (before a needless VRAM spin-up) instead of "grounding" nothing
+        raise SystemExit(f"no content spans extracted from {doc_path} — empty doc or headers only")
     _log(f"doc={Path(doc_path).name} spans={len(spans)} | Q: {question}")
 
     # 1 · embed spans + query (query gets the Qwen3-embedding retrieval instruct)
@@ -108,7 +162,7 @@ def ground(doc_path, question, out_path=None):
         svecs = [embed(8085, s["text"]) for s in spans]
         qvec = embed(8085, f"Instruct: Given a question, retrieve passages that answer it\nQuery: {question}")
     finally:
-        srv.terminate(); time.sleep(2)
+        stop_server(srv)
 
     # 2 · retrieve top-k
     ranked = sorted(range(len(spans)), key=lambda i: cosine(qvec, svecs[i]), reverse=True)[:TOP_K]
@@ -125,7 +179,11 @@ def ground(doc_path, question, out_path=None):
               '{"answer":"...","claims":[{"text":"一句话论断","cites":["C3"]}],"answerable":true}\n/no_think\n\n'
               f"【资料片段】\n{src_block}\n\n【问题】{question}\n\nJSON:")
         raw = chat(8080, gp)
-        g = extract_json(raw) or {"answer": raw, "claims": [], "answerable": None}
+        g = extract_json(raw)
+        parse_error = g is None   # QC C-05: a parse failure must be distinguishable from "no claims"
+        if parse_error:
+            _log("WARNING: grounder output was not parseable JSON — recording parse_error=true")
+            g = {"answer": raw, "claims": [], "answerable": None}
 
         by_id = {s["id"]: s["text"] for s in top}
         verified = []
@@ -139,19 +197,29 @@ def ground(doc_path, question, out_path=None):
                     supported = True; break
             verified.append({**c, "cites": cites, "attributable": bool(cites), "supported": supported})
     finally:
-        srv.terminate(); time.sleep(1)
+        stop_server(srv)
 
     n = len(verified)
     attributable = sum(1 for c in verified if c["attributable"])
     supported = sum(1 for c in verified if c["supported"])
+    # QC C-04: no vacuous certification — a 1-claim answer can't earn a 100% faithfulness
+    # PASS off a single self-judged entailment. pass=None means "not certifiable", distinct
+    # from False (failed). parse_error also forces None.
+    MIN_CLAIMS = 2
+    if parse_error or n < MIN_CLAIMS:
+        faith_pass = None
+        _log(f"faithfulness NOT CERTIFIABLE (parse_error={parse_error}, claims={n} < {MIN_CLAIMS})")
+    else:
+        faith_pass = bool(supported / n >= 0.95)
     result = {
         "doc": str(doc_path), "question": question,
         "answer": g.get("answer"), "answerable": g.get("answerable"),
+        "parse_error": parse_error,
         "claims": verified, "retrieved_spans": [s["id"] for s in top],
         "faithfulness": {"claims": n,
                          "attributable_pct": round(100 * attributable / n, 1) if n else None,
                          "supported_pct": round(100 * supported / n, 1) if n else None,
-                         "pass": bool(n and supported / n >= 0.95)},
+                         "pass": faith_pass},
         "elapsed_s": round(time.time() - t0, 1),
     }
     out = Path(out_path) if out_path else (ROOT / "work" / "grounded.json")

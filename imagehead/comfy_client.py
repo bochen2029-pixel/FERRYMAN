@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 r"""
-comfy_client.py — self-contained ComfyUI runner for FERRYMAN cover art.
+comfy_client.py — self-contained ComfyUI runner (generic cover/illustration art).
 
 A pure-stdlib (urllib / json / argparse / time / pathlib) drop-in replacement
 for the hermes ComfyUI runner skill (run_workflow.py + run_batch.py). It exists
@@ -609,7 +609,7 @@ def run_batch(client: ComfyClient, workflow: dict, base_args: dict,
 # ============================================================
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="Self-contained ComfyUI runner (FERRYMAN). Drop-in for the "
+        description="Self-contained ComfyUI runner. Drop-in for the "
                     "hermes run_workflow.py / run_batch.py contract.",
     )
     p.add_argument("--workflow", required=True, help="Path to an API-format workflow JSON.")

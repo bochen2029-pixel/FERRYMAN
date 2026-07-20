@@ -7,15 +7,19 @@ OpenAI `/v1/chat/completions` image_url path returns EMPTY content with these mm
 build — the mtmd CLI is the working path. One model-load per call (no persistent server), which is
 fine for a per-candidate gate; ComfyUI is stopped by the caller (imagegen) so there's no VRAM clash.
 """
-import re
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 
-MTMD = os.environ.get("LLAMA_MTMD_CLI", "llama-mtmd-cli.exe")
-VMODEL = os.environ.get("FERRYMAN_VISION_GGUF", "Qwen3.5-9B-Q5_K_M.gguf")
-MMPROJ = os.environ.get("FERRYMAN_MMPROJ", "mmproj-F16.gguf")
+# QC C-02: the vision substrate lives OUTSIDE the tree — env-overridable for foreign
+# boxes (defaults = the dev box layout; manifests/substrate.json documents recreation).
+LLAMA_DIR = Path(os.environ.get("FERRYMAN_LLAMA_DIR") or r"C:\llama.cpp")
+GGUF_DIR = Path(os.environ.get("FERRYMAN_GGUF_DIR") or r"C:\models")
+MTMD = str(LLAMA_DIR / "llama-mtmd-cli.exe")
+VMODEL = str(GGUF_DIR / "Qwen3.5-9B-Q5_K_M.gguf")
+MMPROJ = str(GGUF_DIR / "mmproj-F16.gguf")
 
 
 def verify(image_path, intent: str) -> dict:
@@ -32,7 +36,11 @@ def verify(image_path, intent: str) -> dict:
     lines = [ln.strip() for ln in out.splitlines()
              if ln.strip() and not re.match(r"^[\d.]+\s", ln) and "find_slot" not in ln]
     text = " ".join(lines).strip()
-    m = re.search(r"\b(yes|no)\b", text, re.I)
+    # QC C-13: the verdict is the FIRST line's leading token (the prompt demands "YES or NO
+    # on the first line"). Scanning the whole blob turned "No garbled text, yes on-theme"
+    # into a false FAIL. Anything else = None (not gradeable), never a guess.
+    first = lines[0] if lines else ""
+    m = re.match(r"\s*[\*\#\s]*(yes|no)\b", first, re.I)
     ok = (m.group(1).lower() == "yes") if m else None
     return {"ok": ok, "reason": text[:220]}
 

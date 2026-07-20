@@ -1,4 +1,19 @@
-# FERRYMAN config (SPEC §13) — [box] is PER-MACHINE (R2: this is the dev box)
+# FERRYMAN config (SPEC §13) — [box] is PER-MACHINE (R2: this is the dev box).
+#
+# WHAT THE RUNTIME ACTUALLY READS (QC E-01, 2026-07-13; +2026-07-20): [oracles] (thresholds
+# + av gate), [audio] (pause_ms_sentence, loudnorm_lufs), [vram] (min_free_gb_before_load),
+# [models.indextts2].rev (TTS cache key), [box].name (doctor display), and [governance]
+# (revenue tripwire + charter v1.3 flag — the /operator-gate sockets; config/cloud.toml
+# is the socket). On a new machine run `ferryman doctor --write-box` to stamp [box].
+# EVERYTHING ELSE below ([defaults], [output], [captions], [label], the rest of [models.*])
+# is REFERENCE/INERT today — documentation of the shipped behavior, not a control surface.
+# Editing those values changes nothing; the effective defaults live in src/ferryman.py.
+
+[governance]                       # v0.2 contract §9/§15 — operator-gate sockets (READ by the runtime)
+revenue = false                    # the revenue RULING socket: true => license tripwires ENFORCE
+#                                    (IndexTTS2-NC refused at TTS time with the Lane-B swap path)
+charter_v13_signed = false         # flip ONLY on the operator's explicit charter sign-off
+charter_v13_signed_utc = ""        #    statement; stamp the UTC and log in PROGRESS when flipped
 
 [box]
 name = "dev-box"
@@ -43,40 +58,42 @@ cer_error_floor_chars = 1         # absolute tolerance: 1 char of ASR homophone 
 min_free_gb_before_load = 1.5
 exclusive_gpu_lock = false        # dev box: no co-resident assistant; flip on shared boxes (§9)
 
+# NOTE (QC D-09): `local` values are INFORMATIONAL, relative to FERRYMAN_HOME. The runtime
+# derives model paths from FERRYMAN_HOME itself (src/*.py); nothing reads `local` at run time.
 [models.indextts2]
 repo = "IndexTeam/IndexTTS-2"
-local = 'C:\FERRYMAN\models\indextts2'
+local = 'models\indextts2'
 venv = "venv-tts"
 est_vram_gb = 8.2                 # measured 8.14 peak 2026-07-10
 license = "NC (Bilibili) — OK per nonprofit stance; see config/licenses.md tripwire"
 
 [models.cosyvoice3]
 repo = "FunAudioLLM/Fun-CosyVoice3-0.5B-2512"
-local = 'C:\FERRYMAN\models\cosyvoice3'
+local = 'models\cosyvoice3'
 venv = "venv-cosyvoice"
 status = "DEFERRED (Q4: flow-decoder shape bug; code/weights mismatch suspected)"
 
 [models.musetalk]
 repo = "TMElyralab/MuseTalk"
-local = 'C:\FERRYMAN\models\musetalk'
+local = 'models\musetalk'
 venv = "venv-musetalk"            # torch 2.0.1+cu118 + mm-lab chain (4 fixes, see BUILD_STATE)
 est_vram_gb = 8
 
 [models.latentsync16]
 repo = "ByteDance/LatentSync-1.6"
-local = 'C:\FERRYMAN\models\latentsync16'
+local = 'models\latentsync16'
 venv = "venv-inpaint"             # fallback face model; not yet wired
 status = "weights local; wire if MuseTalk zh-mouth ever regresses"
 
 [models.liveportrait]
 repo = "KwaiVGI/LivePortrait"
-local = 'C:\FERRYMAN\models\liveportrait'
+local = 'models\liveportrait'
 venv = "venv-inpaint"             # ort-gpu 1.20.1 deviation from their 1.18 pin (cudnn9)
 role = "make-idle from stills (photo-only speakers); real footage preferred (B3)"
 
 [models.nllb]                      # Head D — cross-lingual MT (naive dub)
 repo = "facebook/nllb-200-distilled-600M"
-local = 'C:\FERRYMAN\models\nllb200'
+local = 'models\nllb200'
 venv = "venv-tts"                  # torch 2.8 (>=2.6): transformers 4.51 blocks .bin load under torch<2.6 (CVE-2025-32434)
 license = "CC-BY-NC-4.0 — OK per nonprofit stance"
 role = "stage_translate_nllb.py; FLORES codes (zho_Hans/eng_Latn/…); ASR→translate→TTS-in-target-voice"

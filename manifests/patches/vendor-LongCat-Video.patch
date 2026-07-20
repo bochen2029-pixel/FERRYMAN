@@ -1,0 +1,28 @@
+diff --git a/run_demo_avatar_single_audio_to_video.py b/run_demo_avatar_single_audio_to_video.py
+index 5fc822a..2a712e1 100644
+--- a/run_demo_avatar_single_audio_to_video.py
++++ b/run_demo_avatar_single_audio_to_video.py
+@@ -47,8 +47,9 @@ def extract_vocal_from_speech(source_path, target_path, vocal_separator, audio_o
+         
+     default_vocal_path = audio_output_dir_temp / "vocals" / outputs[0]
+     default_vocal_path = default_vocal_path.resolve().as_posix()
+-    cmd = f"mv '{default_vocal_path}' '{target_path}'"
+-    os.system(cmd)    
++    # FERRYMAN vendored patch: unix `mv` shell-out fails on Windows; use shutil.
++    import shutil
++    shutil.move(default_vocal_path, target_path)
+     return target_path
+ 
+ def generate(args):
+@@ -99,7 +100,10 @@ def generate(args):
+     num_gpus = torch.cuda.device_count()
+     local_rank = rank % num_gpus
+     torch.cuda.set_device(local_rank)
+-    dist.init_process_group(backend="nccl", timeout=datetime.timedelta(seconds=3600*24))
++    # FERRYMAN vendored patch: NCCL does not exist on Windows; gloo works for the
++    # single-process world this demo actually runs (world_size=1).
++    dist.init_process_group(backend="gloo" if os.name == "nt" else "nccl",
++                            timeout=datetime.timedelta(seconds=3600 * 24))
+     global_rank    = dist.get_rank()
+     num_processes  = dist.get_world_size()
+ 

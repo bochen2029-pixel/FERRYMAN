@@ -43,13 +43,21 @@ parallel with the GPU stages.
 
 ## Authoring a graphic (tier-1 Director = author at job time)
 
-1. Make a HyperFrames project dir (copy `graphics/test_chart` as a template): `index.html` + `hyperframes.json` + `assets/fonts/NotoSansSC-*.otf`.
+1. Make a HyperFrames project dir: `index.html` + `hyperframes.json` + `assets/fonts/NotoSansSC-*.otf`.
+   **Template note (QC E-15):** for a video overlay copy `graphics/ep1_pip` or `graphics/ep1_fullscreen`
+   (authored at the job's 1206×1080@29); `graphics/test_chart` is a STANDALONE 1920×1080@25 demo —
+   fix its `data-width/height/fps` if you start from it.
 2. **CJK MUST use the bundled Noto Sans SC via `@font-face`** — HyperFrames maps only Latin web-fonts; Chinese tofus off-box otherwise.
-3. Author at the job's resolution (1206×1080) with `data-duration` ≈ the target span; keep GSAP deterministic (paused timeline, finite repeats, no `Math.random`/`Date.now`).
-4. Render at the job's fps:
+3. **A `fullscreen` cue MUST carry its own `AI生成` mark in the HTML (QC E-14).** The cutaway
+   replaces the host frame, so it occludes the burned-in ASS label — an unmarked fullscreen
+   graphic is an unlabeled AIGC segment (GB 45438-2025). See `ep1_fullscreen/index.html` /
+   `ep1_image_bg/index.html` for the standard corner mark. PiP cues don't need it (the host's
+   label stays visible).
+4. Author at the job's resolution (1206×1080) with `data-duration` ≈ the target span; keep GSAP deterministic (paused timeline, finite repeats, no `Math.random`/`Date.now`).
+5. Render at the job's fps:
    - fullscreen (opaque): `npx hyperframes@0.6.73 render --fps <fps> --output fs.mp4`
    - PiP (alpha): `npx hyperframes@0.6.73 render --fps <fps> --format mov --output pip.mov`  ← **MOV = ProRes 4444 alpha; `webm` silently flattens to yuv420p**
-5. Reference the file(s) in `graphics.cues`, bound to segment spans.
+6. Reference the file(s) in `graphics.cues`, bound to segment spans.
 
 **Reference comps:** `graphics/test_chart` (data chart), `graphics/ep1_fullscreen` (flow diagram), `graphics/ep1_pip` (alpha corner card).
 

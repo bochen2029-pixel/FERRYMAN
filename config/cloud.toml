@@ -1,0 +1,26 @@
+# FERRYMAN cloud-burst configuration — the optional split tier: local-first, cloud only by
+# EXPLICIT, consent-gated toggle. PLUG-AND-PLAY order when the operator gates land:
+#   1. operator signs the project charter's cloud carve-out -> pipeline.toml [governance] charter_v13_signed=true
+#   2. the enrolled SPEAKER's own cloud consent -> speakers\<id>\profile.json cloud_consent=true (+utc/note)
+#   3. provider account + DPA executed          -> set the API key in the ENV VAR named below
+#        (PowerShell, user-scoped:  [Environment]::SetEnvironmentVariable('RUNPOD_API_KEY','<key>','User'))
+#   4. review the budget caps below             -> then flip  enabled = true
+# The runtime's cloud_preflight() reads ALL of this fail-closed and names every unmet gate —
+# `python src\ferryman.py preflight-cloud <speaker>` shows the live checklist any time.
+# THE KEY ITSELF NEVER GOES IN THIS FILE (env var only). Secure Cloud (single-tenant) is
+# mandatory for biometric jobs — the runtime refuses any other tier string.
+
+[cloud]
+enabled = false                  # the master toggle — LAST thing to flip
+provider = "runpod"              # deep-research pick 2026-07-19 (runner-up: modal)
+tier = "secure-cloud"            # NEVER "community" for voice/face payloads
+instance = "H200"                # $4.39/hr pod (2026-07); Gate C-0 benchmarks before recipes lock
+api_key_env = "RUNPOD_API_KEY"   # the ENV VAR NAME holding the key
+
+[cloud.budget]                   # hard caps — the router refuses when a job would exceed them
+max_usd_per_job = 10.0           # suggested default; operator adjusts
+max_usd_per_month = 60.0
+
+[cloud.image]                    # D4 fills these when manifests/cloud-image/ builds the container
+name = ""                        # e.g. "ferryman-t3-infinitetalk:2026-07"
+sha256 = ""

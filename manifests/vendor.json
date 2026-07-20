@@ -1,0 +1,68 @@
+{
+  "note": "FERRYMAN vendor-clone manifest (QC 2026-07-13, P8c/D-03; REM-3.1 2026-07-19). Rebuild: git clone <url> vendor/<name> && git -C vendor/<name> checkout <commit>; if patch is non-null, apply manifests/<patch> (git apply). REM-3.1: patch is null when the tracked diff is empty (git apply ERRORS on an empty patch file — three such files were removed); dirty_files counts UNTRACKED local files (see patches/*.untracked.txt), not tracked modifications.",
+  "vendors": [
+    {
+      "name": "ComfyUI_LongCat_Avatar",
+      "url": "https://github.com/smthemex/ComfyUI_LongCat_Avatar",
+      "commit": "b8f95ff1b4d6c8f9aa49136419bc51a09b88c4fe",
+      "dirty_files": 0,
+      "patch": null
+    },
+    {
+      "name": "CosyVoice",
+      "url": "https://github.com/FunAudioLLM/CosyVoice",
+      "commit": "074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc",
+      "dirty_files": 0,
+      "patch": null
+    },
+    {
+      "name": "FireRedASR2S",
+      "url": "https://github.com/FireRedTeam/FireRedASR2S",
+      "commit": "4e7d9aaf4482a47cec1724807026b9b151926eb5",
+      "dirty_files": 0,
+      "patch": null
+    },
+    {
+      "name": "index-tts",
+      "url": "https://github.com/index-tts/index-tts",
+      "commit": "b5bd6579e3b18fb80812e4c16ace452c79b05c9a",
+      "dirty_files": 0,
+      "patch": null
+    },
+    {
+      "name": "LivePortrait",
+      "url": "https://github.com/KwaiVGI/LivePortrait",
+      "commit": "9b294b3d0536135442ea73cb01e6cb3ca7029dd3",
+      "dirty_files": 2,
+      "patch": null
+    },
+    {
+      "name": "LongCat-Video",
+      "url": "https://github.com/meituan-longcat/LongCat-Video",
+      "commit": "6b3f4b8582a8bc3f20f795735f5383716c4ba794",
+      "dirty_files": 1,
+      "patch": "patches/vendor-LongCat-Video.patch"
+    },
+    {
+      "name": "MuseTalk",
+      "url": "https://github.com/TMElyralab/MuseTalk",
+      "commit": "0a89dec45a0192b824e3cf4daf96c239440c5ed8",
+      "dirty_files": 0,
+      "patch": null
+    },
+    {
+      "name": "seed-vc",
+      "url": "https://github.com/Plachtaa/seed-vc",
+      "commit": "51383efd921027683c89e5348211d93ff12ac2a8",
+      "dirty_files": 1,
+      "patch": null
+    },
+    {
+      "name": "StableAvatar",
+      "url": "https://github.com/Francis-Rings/StableAvatar",
+      "commit": "e6478957d7f7e4425cbae245cac9f269221e4585",
+      "dirty_files": 6,
+      "patch": null
+    }
+  ]
+}
